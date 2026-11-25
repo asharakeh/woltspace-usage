@@ -18,6 +18,13 @@ def _event(event):
                         ('payload', ('type', 'info', 'rate_limits', 'id', 'session_id', 'model', 'cwd'))):
         if isinstance(result.get(key), dict):
             result[key] = {name: result[key][name] for name in fields if name in result[key]}
+    message = result.get('message')
+    if isinstance(message, dict) and isinstance(message.get('usage'), dict):
+        counts = message['usage']
+        # Preserve truthiness when only unknown fields exist (zero-count coverage).
+        message['usage'] = {key: counts[key] for key in (
+            'input_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens', 'output_tokens'
+        ) if key in counts} or counts
     return result
 
 

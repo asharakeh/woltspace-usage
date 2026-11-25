@@ -105,3 +105,12 @@ def test_empty_identity_header_is_reused(tmp_path, monkeypatch):
     monkeypatch.setattr(uc, 'first_events', no_parse)
     assert counted(tmp_path, cache) == first
     assert cache.headers[path][1] == []
+
+
+def test_cached_usage_omits_unused_nested_fields_without_changing_counts(tmp_path):
+    event = request('one')
+    event['message']['usage']['unused_detail'] = ['dummy'] * 100
+    path = emit(claude(tmp_path), event)
+    cache = uc.TranscriptCache()
+    assert counted(tmp_path, cache) == counted(tmp_path, None)
+    assert 'unused_detail' not in cache.files[path][1][0][0]['message']['usage']
