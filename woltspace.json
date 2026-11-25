@@ -1,0 +1,11 @@
+{
+  "name": "woltspace-usage",
+  "description": "The lodge's LLM token usage per wolt, session, provider and model, counted fresh from the engines' transcripts, with plan limits.",
+  "stack": "python",
+  "port": 4075,
+  "start": "exec python3 -E -s app.py serve --port $PORT",
+  "keeper": "{{keeper}}",
+  "source": "https://github.com/asharakeh/woltspace-usage",
+  "emoji": "🦉",
+  "public": false
+}

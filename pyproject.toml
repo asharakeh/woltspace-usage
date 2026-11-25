@@ -1,0 +1,16 @@
+[project]
+name = "woltspace-usage"
+version = "0.1.0"
+description = "Lodge LLM token usage as a Woltspace app (the app itself uses the standard library only)"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+test = ["pytest==8.3.4"]
+
+[tool.ty.environment]
+# app.py puts usage/ on the path at run time; the tests put tests/ and usage/ there.
+extra-paths = ["usage", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
