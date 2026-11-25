@@ -187,7 +187,8 @@ def make_handler(count):
 
 
 def serve(root, host, port):
-    counting = SingleFlight(lambda: usage_collector.count(root))
+    cache = usage_collector.TranscriptCache()
+    counting = SingleFlight(lambda: usage_collector.count(root, _cache=cache))
     server = ThreadingHTTPServer((host, port), make_handler(counting))
     server.daemon_threads = True
     print(f"{lodge.APP}: serving on {host}:{port}", file=sys.stderr, flush=True)

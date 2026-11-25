@@ -35,6 +35,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import lodge
 import usage_claude
 import usage_codex
+from transcript_cache import TranscriptCache
 
 READERS = {"claude": usage_claude, "codex": usage_codex}
 DIMENSIONS = ("day", "provider", "wolt", "session_id", "model", "metric")
@@ -243,10 +244,11 @@ def owner_of(cwd, roots):
     return max(matches, key=lambda name: len(roots[name].parts)) if matches else None
 
 
-def identify(reader, relative, path):
+def identify(reader, relative, path, _cache=None):
     """(session id, recorded working folder) from the top of a transcript; (None, None) if malformed."""
     try:
-        return reader.identity(relative, first_events(path))
+        events = first_events(path) if _cache is None else _cache.header(path, first_events)
+        return reader.identity(relative, events)
     except (AttributeError, TypeError, ValueError):
         return None, None
 
@@ -255,7 +257,7 @@ def transcripts(base):
     return [path for path in sorted(base.rglob("*.jsonl")) if path.is_file() and not path.is_symlink()]
 
 
-def sources(root, bases):
+def sources(root, bases, _cache=None):
     """{(provider, wolt): [(base, path, shared root or None)]}: every transcript that counts for each wolt.
 
     A wolt's engine folder is its own only when it physically lies inside the wolt's
@@ -285,7 +287,7 @@ def sources(root, bases):
             continue  # already read as that wolt's own folder (the container layout)
         reader = READERS[provider]
         for path in transcripts(base):
-            session, cwd = identify(reader, path.relative_to(base), path)
+            session, cwd = identify(reader, path.relative_to(base), path, _cache)
             if session is None and cwd is None:
                 continue
             wolt = owner_of(cwd, roots)
@@ -298,7 +300,7 @@ def sources(root, bases):
     return roots, found
 
 
-def distinct(provider, entries):
+def distinct(provider, entries, _cache=None):
     """One copy of each transcript seen in several places, with the ids of all its copies.
 
     Claude: visit the longest relative-path copy first, then scan the remaining
@@ -312,7 +314,7 @@ def distinct(provider, entries):
         relative = path.relative_to(base)
         key = relative
         if provider == "codex":
-            session, _ = identify(reader, relative, path)
+            session, _ = identify(reader, relative, path, _cache)
             key = ("session", str(session).lower()) if session else relative
         try:
             size = path.stat().st_size
@@ -341,7 +343,7 @@ def path_id(base, path, shared_root):
     return hashlib.sha256(text.encode()).hexdigest()
 
 
-def scan(root, old_codex_limits, zone, bases=None):
+def scan(root, old_codex_limits, zone, bases=None, _cache=None):
     counts, coverage, gaps, incomplete = Counter(), defaultdict(set), Counter(), set()
     latest = old_codex_limits
 
@@ -362,11 +364,13 @@ def scan(root, old_codex_limits, zone, bases=None):
         if windows:
             latest = {"observed_at": observed.isoformat(), "windows": windows}
 
-    roots, found = sources(root, host_bases() if bases is None else bases)
+    if _cache is not None:
+        _cache.begin()
+    roots, found = sources(root, host_bases() if bases is None else bases, _cache)
     for wolt in roots:
         engines = False
         for provider, reader in READERS.items():
-            entries = distinct(provider, found.get((provider, wolt), []))
+            entries = distinct(provider, found.get((provider, wolt), []), _cache)
             if (root / wolt / reader.ROOT).is_dir() or entries:
                 engines = True
                 if not entries:
@@ -383,13 +387,16 @@ def scan(root, old_codex_limits, zone, bases=None):
 
                 usage = Usage(source, counts, coverage, gap, zone, also=ids[1:])
                 try:
-                    reader.read(relative, jsonl(path, gap), seen, usage, codex_limits, gap)
+                    events = jsonl(path, gap) if _cache is None else _cache.read(path, gap, jsonl)
+                    reader.read(relative, events, seen, usage, codex_limits, gap)
                 except (AttributeError, TypeError, ValueError):
                     gap("invalid_event_shape", None)
             if provider == "claude":
                 usage_claude.finish(seen)
         if not engines:
             gaps[("no_supported_transcripts", None, wolt, None)] += 1
+    if _cache is not None:
+        _cache.end()
     return counts, coverage, gaps, incomplete, latest
 
 
@@ -544,9 +551,9 @@ def codex_reading_of(old):
     return codex_reading(old.get("codex_limits"))
 
 
-def _report(root, old, claude_path, machine, now, bases):
+def _report(root, old, claude_path, machine, now, bases, _cache=None):
     zone, differs = reporting_zone(old, machine)
-    counts, coverage, gaps, incomplete, codex_reading = scan(root, codex_reading_of(old), zone, bases)
+    counts, coverage, gaps, incomplete, codex_reading = scan(root, codex_reading_of(old), zone, bases, _cache)
     if differs:
         gaps[("reporting_zone_differs", None, None, None)] += 1
     rows = merge(old, counts, coverage, gaps, incomplete)
@@ -558,13 +565,13 @@ def _report(root, old, claude_path, machine, now, bases):
     return report, rows, coverage, codex_reading, zone
 
 
-def count(root, history=None, claude_path=None, zone=None, now=None, bases=None):
+def count(root, history=None, claude_path=None, zone=None, now=None, bases=None, _cache=None):
     """The dashboard from saved history plus a fresh scan, in memory. Writes nothing.
     `zone` stands in for the machine's zone (tests); history's own zone still wins."""
     root = Path(root)
     old = read_history(history or history_path(root))
     report, *_ = _report(root, old, claude_path or claude_limits_path(root), zone or machine_zone(),
-                         now or datetime.now(timezone.utc), bases)
+                         now or datetime.now(timezone.utc), bases, _cache)
     return report
 
 
