@@ -78,3 +78,30 @@ def test_warm_equals_cold_with_shared_copies_dedup_errors_and_limits(tmp_path, m
     assert counted(tmp_path, cache, shared) == cold  # seen/metrics must not accumulate in cached events
     assert cold['periods']['all_time']['totals']['input_fresh'] == 23
     assert cold['limits']['codex']['windows']['primary']['used_percent'] == 20
+
+
+def test_cache_retains_reader_events_and_ordered_errors_only(tmp_path):
+    ca = emit(claude(tmp_path), {'type':'user', 'message':{'content':'dummy text'}},
+              request('one'), {'message':['invalid shape']}, request('unreachable'))
+    cx = emit(codex(tmp_path), {'type':'session_meta', 'payload':{'id':SID}},
+              {'type':'response_item', 'payload':{'type':'message', 'content':['dummy text']}},
+              {'type':'turn_context', 'payload':{'model':'codex-a'}},
+              token({'input_tokens':3}, {'input_tokens':3}),
+              {'type':'event_msg', 'payload':{'type':'other'}},
+              {'type':'event_msg', 'payload':['invalid shape']})
+    cache = uc.TranscriptCache()
+    cold = counted(tmp_path, None)
+    assert counted(tmp_path, cache) == counted(tmp_path, cache) == cold
+    assert len(cache.files[ca][1]) == 3  # usage, invalid shape, later usage
+    assert len(cache.files[cx][1]) == 4  # metadata, model, usage, invalid shape
+
+
+def test_empty_identity_header_is_reused(tmp_path, monkeypatch):
+    path = emit(codex(tmp_path))
+    cache = uc.TranscriptCache()
+    first = counted(tmp_path, cache)
+    def no_parse(*args, **kwargs):
+        raise AssertionError('empty unchanged header must be cached')
+    monkeypatch.setattr(uc, 'first_events', no_parse)
+    assert counted(tmp_path, cache) == first
+    assert cache.headers[path][1] == []

@@ -387,7 +387,7 @@ def scan(root, old_codex_limits, zone, bases=None, _cache=None):
 
                 usage = Usage(source, counts, coverage, gap, zone, also=ids[1:])
                 try:
-                    events = jsonl(path, gap) if _cache is None else _cache.read(path, gap, jsonl)
+                    events = jsonl(path, gap) if _cache is None else _cache.read(path, gap, jsonl, reader.keeps)
                     reader.read(relative, events, seen, usage, codex_limits, gap)
                 except (AttributeError, TypeError, ValueError):
                     gap("invalid_event_shape", None)

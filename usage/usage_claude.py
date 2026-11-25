@@ -15,6 +15,12 @@ def identity(relative_path, events):
     return session_of(relative_path), cwd
 
 
+def keeps(event):
+    """Usage records, plus malformed messages that must still stop the reader."""
+    message = event.get("message") or {}
+    return bool(message.get("usage")) if isinstance(message, dict) else True
+
+
 def read(relative_path, events, seen, usage, limits, gap):
     session = session_of(relative_path)
     for event in events:

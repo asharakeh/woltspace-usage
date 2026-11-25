@@ -23,6 +23,13 @@ def identity(relative_path, events):
     return session, cwd
 
 
+def keeps(event):
+    """Session/model/usage records, including malformed payloads for error parity."""
+    payload = event.get("payload") or {}
+    return (not isinstance(payload, dict) or event.get("type") in ("session_meta", "turn_context")
+            or (event.get("type") == "event_msg" and payload.get("type") == "token_count"))
+
+
 def read(relative_path, events, seen, usage, limits, gap):
     session, model = relative_path.stem, None
     summed = dict.fromkeys(COUNTERS, 0)

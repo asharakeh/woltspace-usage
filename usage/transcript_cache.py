@@ -44,14 +44,14 @@ class TranscriptCache:
                 return cached[1]
             self.headers.pop(path, None)
             events = [_event(event) for event in parse(path)]
-            if events and _stamp(path) == stamp:
+            if _stamp(path) == stamp:
                 self.headers[path] = stamp, events
             return events
         except OSError:
             self.headers.pop(path, None)
             return parse(path)
 
-    def read(self, path, gap, parse):
+    def read(self, path, gap, parse, keeps):
         path = Path(path)
         self.used.add(path)
         try:
@@ -65,7 +65,8 @@ class TranscriptCache:
             self.files.pop(path, None)
             records = []
             for event in parse(path, lambda reason, day: records.append((None, (reason, day)))):
-                records.append((_event(event), None))
+                if keeps(event):
+                    records.append((_event(event), None))
             try:
                 stable = _stamp(path) == stamp
             except OSError:
