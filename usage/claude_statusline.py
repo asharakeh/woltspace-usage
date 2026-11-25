@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 import fcntl
 import json
 import os
+import subprocess
 import sys
 import time
 
@@ -18,6 +19,7 @@ from usage_collector import claude_limits_path, limit_window, timestamp, write_j
 WINDOWS = {"five_hour": 300, "seven_day": 10080}
 INPUT_LIMIT = 128 * 1024
 LOCK_SECONDS = 0.2
+CACHED_SESSIONS = 50
 MAX_CLOCK_SKEW = timedelta(minutes=5)
 
 
@@ -42,12 +44,15 @@ def _settings(path, *, missing=True):
     return data
 
 
-def recording(root, environ=None):
+def recording(root, data, environ=None, run=subprocess.run):
     """Whether this status-line call may record a reading for the lodge at `root`.
 
     Only after the human agreed to the settings change (the receipt holds it), and
-    only from a lodge session of this lodge: a shared user configuration also runs
-    the helper in the operator's own Claude sessions, and those are never recorded.
+    only from a registered Claude session of this lodge: the Claude session id in the
+    status-line input must be the one the lodge recorded for the session its
+    environment names. A shared user configuration also runs the helper in other
+    Claude processes (the operator's own, or one started inside a lodge session that
+    inherited its environment); those are never recorded.
     """
     env = os.environ if environ is None else environ
     try:
@@ -55,10 +60,29 @@ def recording(root, environ=None):
             return False
     except (OSError, ValueError, RecursionError):
         return False
-    lodge_root = env.get("WOLTSPACE_WOLTS_DIR")
-    if not env.get("WOLTSPACE_WOLT_SESSION") or not lodge_root:
+    lodge_root, name, wolt = env.get("WOLTSPACE_WOLTS_DIR"), env.get("WOLTSPACE_WOLT_SESSION"), env.get("WOLTSPACE_WOLT_NAME")
+    claude_id = data.get("session_id") if isinstance(data, dict) else None
+    if not (lodge_root and name and wolt and isinstance(claude_id, str) and claude_id):
         return False
-    return os.path.realpath(lodge_root) == os.path.realpath(root)
+    if os.path.realpath(lodge_root) != os.path.realpath(root):
+        return False
+    return _registered(root, name, wolt, claude_id.lower(), run)
+
+
+def _registered(root, name, wolt, claude_id, run):
+    """Whether the lodge recorded `claude_id` for its session `name`; verified pairs are cached."""
+    cache_path = lodge.state_dir(root) / "claude-sessions.json"
+    try:
+        cache = _settings(cache_path)
+    except (OSError, ValueError, RecursionError):
+        cache = {}
+    if cache.get(name) == claude_id:
+        return True
+    if lodge.engine_session_of(root, name, wolt, run) != claude_id:
+        return False
+    cache = dict(list(cache.items())[-(CACHED_SESSIONS - 1):], **{name: claude_id})
+    write_json(cache_path, cache, 0o600, sync=True)
+    return True
 
 
 def publish(root, read_at, data, environ=None):
@@ -70,7 +94,7 @@ def publish(root, read_at, data, environ=None):
         window = limit_window(data["rate_limits"].get(key), "used_percentage", minutes)
         if window and window["used_percent"] <= 100 and type(window["resets_at"]) is int:
             windows[key] = {"used_percentage": window["used_percent"], "resets_at": window["resets_at"]}
-    if not windows or not recording(root, environ):
+    if not windows or not recording(root, data, environ):
         return
     path = claude_limits_path(root)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -87,7 +111,7 @@ def publish(root, read_at, data, environ=None):
                 if time.monotonic() >= deadline:
                     return
                 time.sleep(0.01)
-        if not recording(root, environ):
+        if not recording(root, data, environ):
             return
         try:
             current = _settings(path)

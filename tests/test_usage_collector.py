@@ -460,23 +460,19 @@ def test_unreadable_shared_home_is_skipped_quietly(tmp_path):
 
 # ── Backup and restore ──
 
-def test_history_survives_backup_and_restore_and_saving_resumes(tmp_path):
-    backup = pytest.importorskip("woltspace.backup", reason="needs Woltspace itself (a lodge backup)")
-    create_backup, restore_backup = backup.create_backup, backup.restore_backup
+def test_the_app_state_sits_where_lodge_backups_take_it(tmp_path):
+    """A lodge backup keeps `<wolts_dir>/.space/` whole (only credential files are withheld)
+    and keeps text files up to 5 MB, so the app's history comes back with every restore.
+    The round trip itself is checked against a real lodge backup in the install evidence."""
     root = tmp_path / "wolts"
-    wolt(tmp_path, "alpha")
     emit(claude(tmp_path), request("one"))
-    history = usage_collector.history_path(root)
     usage_collector.save(root, zone=ZONE, bases={})
-    restored = restore_backup(create_backup(root, out_dir=tmp_path / "out").archive,
-                              to=tmp_path / "restored").wolts_dir
-    copy = usage_collector.history_path(restored)
-    assert copy.read_bytes() == history.read_bytes()
-    assert stat.S_IMODE(copy.stat().st_mode) == 0o600
-    copy.with_name("history.json.lock").unlink(missing_ok=True)  # a restore may drop the lock
-    report = usage_collector.save(restored, zone=ZONE, bases={})
-    assert copy.with_name("history.json.lock").exists()
-    assert report["periods"]["all_time"]["totals"]["input_fresh"] == 5
+    state = usage_collector.history_path(root).parent
+    assert state.parent == root / ".space" and state.name == "woltspace-usage"
+    for path in state.iterdir():
+        assert not path.is_symlink() and path.stat().st_size < 5 * 1024 * 1024
+        assert path.name not in {".env", "auth.json", "config.json"} and not path.name.startswith(".credentials")
+
 
 
 def test_claude_dedup_uses_per_counter_max_in_both_orders(tmp_path):

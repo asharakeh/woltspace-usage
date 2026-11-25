@@ -29,7 +29,9 @@ Updating and removing work the same way: ask your wolt.
   `<wolts_dir>/.space/woltspace-usage/`, which your lodge's backups include.
 - **Plan limits.** Codex limits come from its transcripts. Claude limits need one
   status-line entry in Claude's settings, made only with your yes and removed
-  again on uninstall unless you changed it.
+  again on uninstall unless you changed it. On a container lodge the entry goes
+  into the keeper wolt's settings, so the reading updates when the keeper uses
+  Claude; the dashboard shows when it was read.
 
 ## Good to know
 

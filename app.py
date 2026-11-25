@@ -17,6 +17,7 @@ this checkout is installed in). Standard library only; see AGENTS.md to install.
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -98,24 +99,50 @@ def save(root):
 
 
 def configure(root, args):
+    """Validate the keeper and port first; then the receipt, then the manifest (re-runnable)."""
     import lodge
     manifest_path = HERE / "woltspace.json"
-    receipt = lodge.update_receipt(root, lambda r: r.update(
-        {key: value for key, value in (("keeper", args.keeper), ("port", args.port),
-                                       ("schedule", args.schedule)) if value is not None}))
-    if not receipt.get("keeper") or not receipt.get("port"):
+    recorded = lodge.read_receipt(root)
+    keeper = args.keeper if args.keeper is not None else recorded.get("keeper")
+    port = args.port if args.port is not None else recorded.get("port")
+    if not keeper or port is None:
         return fail("configure needs --keeper and --port the first time")
-    if not (Path(root) / receipt["keeper"] / "wolt" / "wolt.json").is_file():
+    if (not isinstance(keeper, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", keeper)
+            or not (Path(root) / keeper / "wolt" / "wolt.json").is_file()):
         return fail("the keeper is not a wolt of this lodge")
+    if type(port) is not int or not 1024 <= port <= 65535:
+        return fail("the port must be a number from 1024 to 65535")
+    changes = {"keeper": keeper, "port": port, **({"schedule": args.schedule} if args.schedule else {})}
+    receipt = lodge.update_receipt(root, lambda r: r.update(changes))
     manifest = json.loads(manifest_path.read_text())
-    manifest.update(keeper=receipt["keeper"], port=receipt["port"])
+    manifest.update(keeper=keeper, port=port)
     manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n")
     print(json.dumps({key: receipt.get(key) for key in ("keeper", "port", "schedule")}))
     return 0
 
 
+LODGE_NOTICE = re.compile(r"<!-- WOLTSPACE:LODGE-SKILL-NOTICE:BEGIN -->.*?<!-- WOLTSPACE:LODGE-SKILL-NOTICE:END -->\n?",
+                          re.DOTALL)
+
+
+def _fingerprint(text):
+    """What install wrote, with only the lodge's own marked shared-skill notice set aside."""
+    import hashlib
+    plain = re.sub(r"\n{3,}", "\n\n", LODGE_NOTICE.sub("", text))
+    return hashlib.sha256(plain.encode()).hexdigest()
+
+
+def _ours(folder, recorded):
+    """Whether `folder` holds exactly the skill this app wrote (no links, no other files, no edits)."""
+    skill_file = folder / "SKILL.md"
+    if folder.is_symlink() or skill_file.is_symlink() or not folder.is_dir():
+        return False
+    if [path.name for path in folder.iterdir()] != ["SKILL.md"]:
+        return False
+    return bool(recorded) and _fingerprint(_text(skill_file)) == recorded
+
+
 def skill(root, args):
-    import re
     import shlex
     import shutil
 
@@ -124,29 +151,29 @@ def skill(root, args):
     if not re.fullmatch(r"lodge-[a-z0-9]+(?:-[a-z0-9]+)*", name) or len(name) > 64:
         return fail("a lodge skill name is lodge-<lowercase words joined by dashes>")
     folder = Path(root) / ".space" / "shared-skills" / name
+    receipt = lodge.read_receipt(root)
+    recorded = receipt.get("skill_sha256") if receipt.get("skill") == name else None
     if args.action == "install":
-        if folder.exists() or folder.is_symlink():
-            ours = lodge.read_receipt(root).get("skill") == name and SKILL_MARKER in _text(folder / "SKILL.md")
-            if not ours:
-                return fail(f"{name} already exists and is not this app's; choose another --name", 4)
+        if (folder.exists() or folder.is_symlink()) and not _ours(folder, recorded):
+            why = "was changed since install" if recorded else "is not this app's"
+            return fail(f"{name} already exists and {why}; left alone (choose another --name)", 4)
         command = shlex.join([sys.executable, "-E", "-s", str(HERE / "app.py"), "--wolts", str(root)])
         text = (HERE / "skills/lodge-usage/SKILL.md").read_text()
         text = text.replace("name: lodge-usage\n", f"name: {name}\n", 1).replace("{{APP}}", command)
         head, _, body = text.partition("\n---\n")
+        written = f"{head}\n---\n\n{SKILL_MARKER}\n{body}"
         folder.mkdir(parents=True, exist_ok=True)
-        (folder / "SKILL.md").write_text(f"{head}\n---\n\n{SKILL_MARKER}\n{body}")
-        lodge.update_receipt(root, lambda r: r.__setitem__("skill", name))
+        (folder / "SKILL.md").write_text(written)
+        lodge.update_receipt(root, lambda r: r.update(skill=name, skill_sha256=_fingerprint(written)))
         print(json.dumps({"skill": name, "path": str(folder / "SKILL.md")}))
         return 0
-    receipt = lodge.read_receipt(root)
     if receipt.get("skill") != name:
         return fail(f"{name} was not installed by this app; left alone", 4)
-    if folder.is_dir() and not folder.is_symlink():
-        if [path.name for path in folder.iterdir()] == ["SKILL.md"] and SKILL_MARKER in _text(folder / "SKILL.md"):
-            shutil.rmtree(folder)
-        else:
-            return fail(f"{name} holds files this app did not write; left alone", 4)
-    lodge.update_receipt(root, lambda r: r.pop("skill", None))
+    if folder.exists() or folder.is_symlink():
+        if not _ours(folder, recorded):
+            return fail(f"{name} was changed or holds other files since install; left alone", 4)
+        shutil.rmtree(folder)
+    lodge.update_receipt(root, lambda r: [r.pop(key, None) for key in ("skill", "skill_sha256")])
     print(json.dumps({"skill_removed": name}))
     return 0
 

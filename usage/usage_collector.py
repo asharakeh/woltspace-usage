@@ -183,6 +183,21 @@ def limit_window(record, percent_key, minutes):
     return {"used_percent": percent, "window_minutes": minutes, "resets_at": reset}
 
 
+def codex_reading(saved):
+    """A saved Codex limits reading, checked again; None when it is missing or malformed."""
+    if (not isinstance(saved, dict) or timestamp(saved.get("observed_at")) is None
+            or not isinstance(saved.get("windows"), dict) or not saved["windows"]):
+        return None
+    windows = {}
+    for key, window in saved["windows"].items():
+        minutes = window.get("window_minutes") if isinstance(window, dict) else None
+        valid = limit_window(window, "used_percent", minutes)
+        if not isinstance(key, str) or valid is None:
+            return None
+        windows[key] = valid
+    return {"observed_at": saved["observed_at"], "windows": windows}
+
+
 def claude_limits(path):
     try:
         data = json.loads(path.read_bytes())
@@ -525,9 +540,13 @@ def read_history(history):
             lock.close()
 
 
+def codex_reading_of(old):
+    return codex_reading(old.get("codex_limits"))
+
+
 def _report(root, old, claude_path, machine, now, bases):
     zone, differs = reporting_zone(old, machine)
-    counts, coverage, gaps, incomplete, codex_reading = scan(root, old.get("codex_limits"), zone, bases)
+    counts, coverage, gaps, incomplete, codex_reading = scan(root, codex_reading_of(old), zone, bases)
     if differs:
         gaps[("reporting_zone_differs", None, None, None)] += 1
     rows = merge(old, counts, coverage, gaps, incomplete)

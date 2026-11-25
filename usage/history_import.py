@@ -21,7 +21,14 @@ from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import lodge
-from usage_collector import DIMENSIONS, HISTORY_SCHEMA, METRICS, READERS, history_path
+from usage_collector import (
+    DIMENSIONS,
+    HISTORY_SCHEMA,
+    METRICS,
+    READERS,
+    codex_reading,
+    history_path,
+)
 
 
 class ImportRefused(ValueError):
@@ -90,7 +97,7 @@ def validate(data):
                 or not isinstance(entry.get("sources"), list)
                 or not all(isinstance(source, str) for source in entry["sources"])):
             raise ImportRefused("a coverage entry is malformed")
-    if not isinstance(data.get("codex_limits"), (dict, type(None))):
+    if data.get("codex_limits") is not None and codex_reading(data["codex_limits"]) is None:
         raise ImportRefused("saved Codex limits are malformed")
     return totals
 

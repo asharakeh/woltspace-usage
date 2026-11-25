@@ -162,3 +162,37 @@ def test_the_snapshot_waits_for_a_native_save_in_progress(root):
     worker.join(10)
     assert finished and finished[0]["rows"] == 1
     assert json.loads(usage_collector.history_path(root).read_text()) == rewritten
+
+
+@pytest.mark.parametrize("saved", [
+    {"observed_at": "2026-10-31T00:00:00+00:00", "windows": None},
+    {"observed_at": "2026-10-31T00:00:00+00:00", "windows": {}},
+    {"observed_at": "yesterday", "windows": {"primary": {"used_percent": 1, "window_minutes": 300, "resets_at": 1}}},
+    {"observed_at": "2026-10-31T00:00:00+00:00", "windows": {"primary": {"used_percent": "1"}}},
+    [],
+])
+def test_a_malformed_saved_codex_reading_is_refused(root, saved):
+    native(root, codex_limits=saved)
+    with pytest.raises(history_import.ImportRefused, match="Codex limits"):
+        history_import.run(root)
+    assert "import" not in lodge.read_receipt(root)
+
+
+def test_a_valid_saved_codex_reading_is_imported_and_shown(root):
+    reading = {"observed_at": "2026-10-31T00:00:00+00:00",
+               "windows": {"primary": {"used_percent": 7, "window_minutes": 300, "resets_at": 1795000000}}}
+    native(root, codex_limits=reading)
+    assert history_import.run(root)["status"] == "imported"
+    shown = run_app(root, "limits", "--format", "json")
+    assert shown.returncode == 0 and json.loads(shown.stdout)["limits"]["codex"] == reading
+
+
+def test_a_malformed_saved_reading_already_in_history_reads_as_unavailable(root):
+    destination = usage_collector.history_path(root)
+    destination.parent.mkdir(mode=0o700, parents=True)
+    destination.write_text(json.dumps({"schema_version": 1, "timezone": "Asia/Tokyo", "rows": [],
+                                       "codex_limits": {"observed_at": "2026-10-31T00:00:00+00:00", "windows": None}}))
+    for args in (("limits",), ("limits", "--format", "csv"), ("summary", "--format", "json")):
+        shown = run_app(root, *args)
+        assert shown.returncode == 0 and "Traceback" not in shown.stderr, args
+    assert json.loads(run_app(root, "limits", "--format", "json").stdout)["limits"]["codex"] is None

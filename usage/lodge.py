@@ -68,28 +68,38 @@ def local_zone_name(environ=None):
     return datetime.now().astimezone().tzname() or "local"
 
 
+def _session_list(root, run, wolt=None):
+    """The lodge's session records (`woltspace session list --json`), or [] when unavailable."""
+    env = dict(os.environ, WOLTSPACE_WOLTS_DIR=str(root))
+    argv = ["woltspace", "session", "list", "--json", *(["--wolt", wolt] if wolt else [])]
+    try:
+        result = run(argv, capture_output=True, timeout=SESSION_LIST_TIMEOUT, env=env, stdin=subprocess.DEVNULL)
+        records = json.loads(result.stdout) if result.returncode == 0 else []
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return []
+    return [record for record in records if isinstance(record, dict)] if isinstance(records, list) else []
+
+
 def session_records(root, run=subprocess.run):
-    """{engine session id: wolt} from `woltspace session list --json`; {} when it is unavailable.
+    """{engine session id: wolt} from the lodge's session records; {} when they are unavailable.
 
     Only the two fields attribution needs are kept, and only in memory.
     """
-    env = dict(os.environ, WOLTSPACE_WOLTS_DIR=str(root))
-    try:
-        result = run(["woltspace", "session", "list", "--json"], capture_output=True,
-                     timeout=SESSION_LIST_TIMEOUT, env=env, stdin=subprocess.DEVNULL)
-        records = json.loads(result.stdout) if result.returncode == 0 else []
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return {}
-    if not isinstance(records, list):
-        return {}
     found = {}
-    for record in records:
-        if not isinstance(record, dict):
-            continue
+    for record in _session_list(root, run):
         session, wolt = record.get("harness_session_id"), record.get("wolt")
         if isinstance(session, str) and session and isinstance(wolt, str) and wolt:
             found[session.lower()] = wolt
     return found
+
+
+def engine_session_of(root, name, wolt, run=subprocess.run):
+    """The engine session id the lodge recorded for its session `name` of `wolt`, or None."""
+    for record in _session_list(root, run, wolt):
+        session = record.get("harness_session_id")
+        if record.get("name") == name and record.get("wolt") == wolt and isinstance(session, str) and session:
+            return session.lower()
+    return None
 
 
 # ── The installation receipt: what install changed, so update and uninstall touch only that ──

@@ -11,10 +11,14 @@ human names another wolt. Run every `app.py` command as written here
 
 ## Install
 
-1. **Find the lodge.** `<WOLTS>` is the `wolts_dir` that `woltspace paths` prints
-   (an older lodge without that command: `$WOLTSPACE_WOLTS_DIR`). It holds `.space/`.
+1. **Find the lodge.** `<WOLTS>` is `$WOLTSPACE_WOLTS_DIR`, which every lodge
+   session has. `woltspace paths` prints it as `wolts_dir` too, on lodges that have
+   that command (some do not, container lodges among them). It holds `.space/`.
 2. **Check for collisions.**
-   - `<APP>` must not exist yet. If it does and is not this app, stop and ask.
+   - `<APP>` must not exist yet. If it does and is this app (`git -C <APP> remote -v`
+     names this repository and `python3 -E -s <APP>/app.py status` shows a keeper),
+     it is already installed: follow **Update** instead. If it is something else,
+     stop and ask.
    - Port: 4075 if it is free, else another free port in 4000-5999. A port is
      taken when another app's `woltspace.json` names it
      (`curl -s http://localhost:${WOLTSPACE_PORT:-7777}/apps`) or something
@@ -67,8 +71,12 @@ human names another wolt. Run every `app.py` command as written here
    - If `show` says the limits are unavailable (a status line already exists,
      including a disabled one, or a file cannot be read, or this is not a lodge
      session), tell your human that and why, and leave everything as it is.
-   - The helper records readings only from this lodge's sessions, and keeps only
-     the plan-limit windows and when they were read.
+   - The helper records readings only from this lodge's registered Claude
+     sessions, and keeps only the plan-limit windows and when they were read.
+   - On a container lodge each wolt has its own Claude settings, so the change
+     goes into `<KEEPER>`'s: only `<KEEPER>`'s Claude sessions feed the reading.
+     The limits are the account's, so that is enough while `<KEEPER>` works with
+     Claude now and then; the dashboard shows when the reading was taken.
 10. **Tell your human** what was installed: the port, the keeper, the job name,
     the skill name, whether the history was imported, and whether Claude limits
     are on. `python3 -E -s <APP>/app.py status` prints all of it.

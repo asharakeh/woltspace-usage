@@ -10,7 +10,7 @@ from disk by request path, so history, the receipt and the code are never served
   GET /api/usage       a query (`command=summary|table|limits`, the CLI's options)
                        as JSON, CSV or text
 
-A count reads transcripts and saved history and writes nothing. One count runs at
+Requests must name a loopback host (see loopback_host). A count reads transcripts and saved history and writes nothing. One count runs at
 a time; requests that arrive during it share it, and a later request counts again.
 Errors are fixed codes that never echo the request or the reason a count failed.
 """
@@ -41,6 +41,25 @@ SECURITY_HEADERS = {
         "connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'"
     ),
 }
+
+
+LOOPBACK_NAMES = {"localhost", "127.0.0.1", "[::1]"}
+
+
+def loopback_host(header):
+    """Whether a Host header names this machine's loopback, as the lodge's proxy sends it.
+
+    The lodge reaches the app as `localhost:<port>` (it rewrites the Host header) or
+    directly on 127.0.0.1. Any other name is refused, so a web page that rebinds
+    its own domain to 127.0.0.1 cannot read the numbers.
+    """
+    if not header or any(ch.isspace() for ch in header):
+        return False
+    name = header.rsplit(":", 1)[0] if not header.endswith("]") else header
+    if header.startswith("[") and "]:" in header:
+        name = header.split("]:", 1)[0] + "]"
+    name = name.lower()
+    return name in LOOPBACK_NAMES or (name.endswith(".localhost") and len(name) > len(".localhost"))
 
 
 class QueryParams:
@@ -118,6 +137,8 @@ def make_handler(count):
             return None
 
         def do_GET(self):
+            if not loopback_host(self.headers.get("Host")):
+                return self.fail(421, "unknown_host")
             path, _, raw_query = self.path.partition("?")
             if path == "/api/data":
                 try:
@@ -150,6 +171,8 @@ def make_handler(count):
             return self.fail(404, "not_found")
 
         def do_HEAD(self):
+            if not loopback_host(self.headers.get("Host")):
+                return self.fail(421, "unknown_host")
             path = self.path.split("?", 1)[0]
             if path in PAGES:
                 return self.do_GET()

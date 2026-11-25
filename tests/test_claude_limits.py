@@ -17,26 +17,44 @@ import usage_support  # noqa: F401
 from usage_collector import claude_limits, claude_limits_path
 
 ROOT = Path(__file__).resolve().parents[1]
-READING = {"ignored": "private", "rate_limits": {
+CLAUDE_ID = "00000000-0000-0000-0000-0000000000c1"  # what the lodge recorded for alpha-session
+READING = {"ignored": "private", "session_id": CLAUDE_ID, "rate_limits": {
     "five_hour": {"used_percentage": 12, "resets_at": 1795000000, "unknown": "private"},
     "seven_day": {"used_percentage": 101, "resets_at": 1795400000},
 }}
 
 
 @pytest.fixture
-def lodge_root(tmp_path):
-    """A lodge with the wolt alpha, an empty operator home and no managed settings."""
+def lodge_root(tmp_path, monkeypatch):
+    """A lodge with the wolt alpha, an empty operator home, no managed settings, and a
+    `woltspace` on PATH whose session records hold alpha-session with CLAUDE_ID."""
     root = tmp_path / "wolts"
     (root / ".space").mkdir(parents=True)
     (root / "alpha/wolt").mkdir(parents=True)
     (root / "alpha/wolt/wolt.json").write_text("{}")
     (tmp_path / "home").mkdir()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    records = [{"name": "alpha-session", "wolt": "alpha", "harness_session_id": CLAUDE_ID.upper()},
+               {"name": "alpha-other", "wolt": "alpha", "harness_session_id": "00000000-0000-0000-0000-0000000000c2"}]
+    (tmp_path / "records.json").write_text(json.dumps(records))
+    fake = bin_dir / "woltspace"
+    fake.write_text(f"#!/bin/sh\necho \"$*\" >> {tmp_path / 'cli-calls'}\ncat {tmp_path / 'records.json'}\n")
+    fake.chmod(0o700)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}/usr/bin:/bin")
     return root
+
+
+def cli_calls(tmp_path):
+    try:
+        return (tmp_path / "cli-calls").read_text().splitlines()
+    except FileNotFoundError:
+        return []
 
 
 def lodge_env(tmp_path, root, **extra):
     """The environment of a lodge session of this lodge (what Claude hands its status line)."""
-    return {"HOME": str(tmp_path / "home"), "WOLTSPACE_WOLTS_DIR": str(root),
+    return {"HOME": str(tmp_path / "home"), "WOLTSPACE_WOLTS_DIR": str(root), "WOLTSPACE_WOLT_NAME": "alpha",
             "WOLTSPACE_WOLT_SESSION": "alpha-session", "WOLTSPACE_ISOLATION": "host", **extra}
 
 
@@ -49,7 +67,7 @@ def consented(root, command="recorded"):
 
 def test_the_helper_keeps_only_valid_windows_and_stays_silent(tmp_path, lodge_root):
     consented(lodge_root)
-    env = {"PATH": "/usr/bin:/bin", **lodge_env(tmp_path, lodge_root)}
+    env = {"PATH": os.environ["PATH"], **lodge_env(tmp_path, lodge_root)}
     helper = [sys.executable, "-E", "-s", str(ROOT / "app.py"), "--wolts", str(lodge_root), "statusline"]
     snapshot = claude_limits_path(lodge_root)
     for raw in (json.dumps(READING).encode(), b"", b"not json", b"[1]", b"x" * 131073):
@@ -87,13 +105,45 @@ def test_the_helper_records_nothing_outside_a_consented_lodge_session(tmp_path, 
     assert not claude_limits_path(lodge_root).exists()
 
 
+@pytest.mark.parametrize("claude_id", [
+    "00000000-0000-0000-0000-0000000000c2",  # another lodge session's id
+    "00000000-0000-0000-0000-00000000dead",  # a Claude started inside the session, inheriting its env
+    None, 7,
+])
+def test_the_helper_records_only_the_registered_claude_session(tmp_path, lodge_root, claude_id):
+    consented(lodge_root)
+    reading = dict(READING, session_id=claude_id)
+    claude_statusline.publish(lodge_root, datetime.now(UTC), reading, environ=lodge_env(tmp_path, lodge_root))
+    assert not claude_limits_path(lodge_root).exists()
+    claude_statusline.publish(lodge_root, datetime.now(UTC), READING, environ=lodge_env(tmp_path, lodge_root))
+    assert claude_limits_path(lodge_root).exists()
+
+
+def test_without_the_lodge_s_records_nothing_is_recorded(tmp_path, lodge_root, monkeypatch):
+    consented(lodge_root)
+    monkeypatch.setenv("PATH", "/nonexistent")  # no `woltspace` to ask
+    claude_statusline.publish(lodge_root, datetime.now(UTC), READING, environ=lodge_env(tmp_path, lodge_root))
+    assert not claude_limits_path(lodge_root).exists()
+
+
+def test_a_verified_session_is_not_looked_up_again(tmp_path, lodge_root):
+    consented(lodge_root)
+    env = lodge_env(tmp_path, lodge_root)
+    for minutes in (3, 2, 1):
+        claude_statusline.publish(lodge_root, datetime.now(UTC) - timedelta(minutes=minutes), READING, environ=env)
+    assert cli_calls(tmp_path) == ["session list --json --wolt alpha"]
+    cache = lodge.state_dir(lodge_root) / "claude-sessions.json"
+    assert json.loads(cache.read_text()) == {"alpha-session": CLAUDE_ID}
+    assert stat.S_IMODE(cache.stat().st_mode) == 0o600
+
+
 def test_a_far_future_snapshot_can_be_replaced_after_a_clock_step(tmp_path, lodge_root):
     consented(lodge_root)
     env = lodge_env(tmp_path, lodge_root)
     now = datetime.now(UTC)
 
     def publish(at, percent):
-        claude_statusline.publish(lodge_root, at, {"rate_limits": {
+        claude_statusline.publish(lodge_root, at, {"session_id": CLAUDE_ID, "rate_limits": {
             "five_hour": {"used_percentage": percent, "resets_at": 1795000000},
         }}, environ=env)
 
@@ -239,4 +289,42 @@ def test_the_command_asks_for_the_human_s_yes(tmp_path, lodge_root):
     assert shown.returncode == 0 and json.loads(shown.stdout)["change"]["statusLine"]["type"] == "command"
     refused = subprocess.run([*app, "apply", "--wolt", "alpha"], capture_output=True, text=True, env=env, check=False)
     assert refused.returncode == 2 and "--yes" in refused.stderr
+    assert not (tmp_path / "home/.claude/settings.json").exists()
+
+
+def test_apply_and_remove_leave_every_other_byte_of_the_file_alone(tmp_path, lodge_root):
+    settings = tmp_path / "home/.claude/settings.json"
+    settings.parent.mkdir(parents=True)
+    original = '{\n    "model": "keep-me",\n    "note": "café",\n    "permissions": {"allow": ["x"]}\n}\n'
+    settings.write_text(original)
+    limits_setup.apply(lodge_root, "alpha", lodge_env(tmp_path, lodge_root), managed=tmp_path / "managed")
+    applied = settings.read_text()
+    assert applied.startswith('{\n    "model": "keep-me",\n    "note": "café",\n    "permissions": {"allow": ["x"]},\n')
+    assert json.loads(applied)["statusLine"]["type"] == "command"
+    assert limits_setup.remove(lodge_root) == "removed"
+    assert settings.read_text() == original
+
+
+def test_the_intent_is_recorded_before_the_settings_file_is_touched(tmp_path, lodge_root, monkeypatch):
+    seen = []
+    real_replace = limits_setup._replace
+
+    def replace(path, before, text):
+        seen.append(lodge.read_receipt(lodge_root).get("claude_limits", {}).get("state"))
+        return real_replace(path, before, text)
+
+    monkeypatch.setattr(limits_setup, "_replace", replace)
+    limits_setup.apply(lodge_root, "alpha", lodge_env(tmp_path, lodge_root), managed=tmp_path / "managed")
+    assert seen == ["applying"]
+    assert lodge.read_receipt(lodge_root)["claude_limits"]["state"] == "applied"
+
+
+def test_a_failed_settings_write_leaves_no_recorded_change(tmp_path, lodge_root, monkeypatch):
+    def failing(path, before, text):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(limits_setup, "_replace", failing)
+    with pytest.raises(OSError):
+        limits_setup.apply(lodge_root, "alpha", lodge_env(tmp_path, lodge_root), managed=tmp_path / "managed")
+    assert "claude_limits" not in lodge.read_receipt(lodge_root)
     assert not (tmp_path / "home/.claude/settings.json").exists()

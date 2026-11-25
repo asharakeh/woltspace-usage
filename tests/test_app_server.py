@@ -228,3 +228,19 @@ def test_the_server_binds_to_loopback_unless_told_otherwise():
     manifest = json.loads((ROOT / "woltspace.json").read_text())
     assert manifest["public"] is False and manifest["name"] == "woltspace-usage"
     assert manifest["start"] == "exec python3 -E -s app.py serve --port $PORT"
+
+
+def test_only_loopback_host_names_are_answered(app):
+    port = app.httpd.server_address[1]
+    url = f"http://127.0.0.1:{port}"
+    for name, status in (("localhost:7777", 200), (f"127.0.0.1:{port}", 200), ("woltspace-usage.localhost:7777", 200),
+                         ("attacker.example", 421), ("localhost.attacker.example:7777", 421), ("", 421)):
+        request = urllib.request.Request(url + "/api/data", headers={"Host": name})
+        try:
+            with OPENER.open(request, timeout=20) as response:
+                got, body = response.status, response.read()
+        except urllib.error.HTTPError as error:
+            got, body = error.code, error.read()
+        assert got == status, name
+        if status == 421:
+            assert json.loads(body) == {"error": "unknown_host"} and b"input_fresh" not in body

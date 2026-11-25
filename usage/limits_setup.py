@@ -84,15 +84,15 @@ def _owned(path):
         raise NotEligible(f"{path} belongs to another user; nothing is changed")
 
 
-def _replace(path, before, settings):
-    """Write `settings` over `path` only if it still holds exactly `before` (None: absent)."""
+def _replace(path, before, text):
+    """Write `text` over `path` only if it still holds exactly `before` (None: absent)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     mode = path.stat().st_mode & 0o777 if before is not None else 0o600
     temporary = path.with_name(f".{path.name}.woltspace-usage-{os.getpid()}")
     fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
     try:
-        with os.fdopen(fd, "w") as stream:
-            stream.write(json.dumps(settings, indent=2) + "\n")
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(text)
             stream.flush()
             os.fsync(stream.fileno())
         try:
@@ -117,20 +117,62 @@ def _read(path):
         raise NotEligible(f"{path} could not be read; nothing is changed") from None
 
 
+def _member(status_line):
+    return '"statusLine": ' + json.dumps(status_line)
+
+
+def _with_member(before, settings, status_line):
+    """`before` with only a `statusLine` member added before its closing brace; every other byte kept."""
+    if before is None:
+        return ("{\n  " + _member(status_line) + "\n}\n").encode()
+    text = before.decode()
+    closing = text.rstrip().rfind("}")
+    inside = text[:closing].rstrip()
+    separator = "" if inside.endswith("{") else ","
+    result = f"{inside}{separator}\n  {_member(status_line)}\n{text[closing:]}"
+    if json.loads(result) != {**settings, "statusLine": status_line}:
+        raise NotEligible("the settings file has a layout this change cannot be added to safely")
+    return result.encode()
+
+
+def _without_member(before, settings, status_line):
+    """`before` with the added member taken out again, by text when it is still as written."""
+    text, member = before.decode(), _member(status_line)
+    expected = {key: value for key, value in settings.items() if key != "statusLine"}
+    for added in (",\n  " + member + "\n", "\n  " + member + "\n"):
+        if text.count(added) == 1:
+            result = text.replace(added, "\n" if added.startswith(",") else "", 1)
+            try:
+                if json.loads(result) == expected:
+                    return result.encode()
+            except ValueError:
+                pass
+    return (json.dumps(expected, indent=2) + "\n").encode()
+
+
 def apply(root, wolt, environ=None, managed=None):
-    """Make the proposed change (after the human's yes) and record it. Returns the proposal."""
+    """Make the proposed change (after the human's yes) and record it. Returns the proposal.
+
+    The receipt records the intent before the settings file is touched, so a failure
+    in between leaves something `remove` knows about.
+    """
     if lodge.read_receipt(root).get("claude_limits"):
         raise NotEligible("the Claude limits change is already recorded; remove it first")
     planned = proposal(root, wolt, environ, managed)
-    path = Path(planned["settings_file"])
+    path, status_line = Path(planned["settings_file"]), planned["change"]["statusLine"]
     before, settings = _read(path)
     if "statusLine" in settings:
         raise NotEligible(f"{path} already sets a status line; it stays as it is")
-    _replace(path, before, {**settings, **planned["change"]})
-    lodge.update_receipt(root, lambda receipt: receipt.__setitem__("claude_limits", {
-        "settings_file": str(path), "statusLine": planned["change"]["statusLine"],
-        "applied_at": datetime.now(UTC).isoformat(timespec="seconds"),
-    }))
+    text = _with_member(before, settings, status_line)
+    entry = {"settings_file": str(path), "statusLine": status_line, "state": "applying"}
+    lodge.update_receipt(root, lambda receipt: receipt.__setitem__("claude_limits", entry))
+    try:
+        _replace(path, before, text)
+    except BaseException:
+        lodge.update_receipt(root, lambda receipt: receipt.pop("claude_limits", None))
+        raise
+    applied = dict(entry, state="applied", applied_at=datetime.now(UTC).isoformat(timespec="seconds"))
+    lodge.update_receipt(root, lambda receipt: receipt.__setitem__("claude_limits", applied))
     return planned
 
 
@@ -143,9 +185,8 @@ def remove(root):
     outcome = "kept"
     if not path.is_symlink():
         before, settings = _read(path)
-        if settings.get("statusLine") == recorded["statusLine"]:
-            del settings["statusLine"]
-            _replace(path, before, settings)
+        if before is not None and settings.get("statusLine") == recorded["statusLine"]:
+            _replace(path, before, _without_member(before, settings, recorded["statusLine"]))
             outcome = "removed"
     lodge.update_receipt(root, lambda receipt: receipt.pop("claude_limits", None))
     return outcome

@@ -59,8 +59,6 @@ def test_the_skill_points_at_the_installed_command_and_uninstalls_cleanly(checko
     text = installed.read_text()
     assert text.startswith("---\nname: lodge-usage\n") and "{{APP}}" not in text
     assert f"{app / 'app.py'} --wolts {root} summary --since 7d" in text
-    # The lodge adds its shared-edit notice after the frontmatter; removal still recognizes ours.
-    installed.write_text(text.replace("---\n\n", "---\n\n<!-- lodge notice -->\n", 1))
     assert run(app, "skill", "remove").returncode == 0
     assert not installed.parent.exists()
 
@@ -121,3 +119,53 @@ def test_the_app_never_writes_inside_its_checkout(checkout, tmp_path):
         assert run(app, *args).returncode == 0, args
     after = sorted(str(path.relative_to(app)) for path in app.rglob("*") if "__pycache__" not in path.parts)
     assert after == before
+
+
+def test_a_hand_edited_skill_is_never_removed_or_overwritten(checkout):
+    root, app = checkout
+    assert run(app, "skill", "install").returncode == 0
+    installed = root / ".space/shared-skills/lodge-usage/SKILL.md"
+    edited = installed.read_text() + "\nA note my human added.\n"  # the install marker is still there
+    installed.write_text(edited)
+    removed = run(app, "skill", "remove")
+    assert removed.returncode == 4 and "changed" in removed.stderr
+    assert installed.read_text() == edited
+    assert run(app, "skill", "install").returncode == 4  # an update does not overwrite it either
+    assert installed.read_text() == edited
+
+
+def test_the_lodge_s_own_notice_does_not_count_as_an_edit(checkout):
+    root, app = checkout
+    assert run(app, "skill", "install").returncode == 0
+    installed = root / ".space/shared-skills/lodge-usage/SKILL.md"
+    notice = ("<!-- WOLTSPACE:LODGE-SKILL-NOTICE:BEGIN -->\n**Shared lodge skill.**\n"
+              "<!-- WOLTSPACE:LODGE-SKILL-NOTICE:END -->\n\n")
+    head, _, body = installed.read_text().partition("\n---\n")
+    installed.write_text(f"{head}\n---\n\n{notice}{body}")
+    assert run(app, "skill", "install").returncode == 0  # an update replaces it
+    assert run(app, "skill", "remove").returncode == 0
+    assert not installed.parent.exists()
+
+
+def test_a_linked_skill_is_left_alone(checkout, tmp_path):
+    root, app = checkout
+    assert run(app, "skill", "install").returncode == 0
+    folder = root / ".space/shared-skills/lodge-usage"
+    elsewhere = tmp_path / "elsewhere"
+    folder.rename(elsewhere)
+    folder.symlink_to(elsewhere)
+    assert run(app, "skill", "remove").returncode == 4
+    assert folder.is_symlink() and (elsewhere / "SKILL.md").exists()
+
+
+@pytest.mark.parametrize("args", [("--keeper", "nobody"), ("--keeper", "../alpha"), ("--port", "80"),
+                                  ("--port", "70000"), ("--keeper", "beta", "--port", "1")])
+def test_an_invalid_configure_changes_nothing(checkout, args):
+    _, app = checkout
+    assert run(app, "configure", "--keeper", "alpha", "--port", "4076").returncode == 0
+    receipt_before = json.loads(run(app, "status").stdout)
+    manifest_before = (app / "woltspace.json").read_bytes()
+    assert run(app, "configure", *args).returncode == 2
+    assert json.loads(run(app, "status").stdout) == receipt_before
+    assert (app / "woltspace.json").read_bytes() == manifest_before
+    assert run(app, "configure").returncode == 0  # and a plain re-apply still works
