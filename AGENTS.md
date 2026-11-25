@@ -61,16 +61,15 @@ human names another wolt. Run every `app.py` command as written here
      and `python3 -E -s <APP>/app.py summary --since 7d` prints totals.
    - Show your human the page: `push-view http://woltspace-usage.localhost:${WOLTSPACE_PORT:-7777}/`.
      The numbers appear after "Counting…". Ask whether they look right.
-9. **Offer Claude plan limits (ask first).**
-   `python3 -E -s <APP>/app.py limits-setup show`
-   - This prints the Claude settings file and the exact JSON it would add, and
-     changes nothing. Show both to your human, verbatim, and ask: *"May I add this
-     status line so the dashboard can show your Claude plan limits?"*
-   - Only on a clear yes: `python3 -E -s <APP>/app.py limits-setup apply --yes`.
-     On a no, skip it: usage counting works without it.
-   - If `show` says the limits are unavailable (a status line already exists,
-     including a disabled one, or a file cannot be read, or this is not a lodge
-     session), tell your human that and why, and leave everything as it is.
+9. **Enable Claude plan limits by default.**
+   `python3 -E -s <APP>/app.py limits-setup apply --yes`
+   - On success, tell your human the settings file and exact `statusLine` JSON
+     printed by the command. To turn off this feed, run
+     `python3 -E -s <APP>/app.py limits-setup remove`.
+   - If the command reports that limits are unavailable because a status line
+     already exists (including a disabled one), a file cannot be read, or this
+     is not a lodge session, tell your human the reason and continue with usage
+     counting. The command leaves those settings untouched.
    - The helper records readings only from this lodge's registered Claude
      sessions, and keeps only the plan-limit windows and when they were read.
      A session whose Claude conversation was cleared (`/clear`) or replaced has a
@@ -129,7 +128,7 @@ there; deleting it is their call.
   (`woltspace session list`). The operator's own sessions are never counted.
 - Writes only in `<WOLTS>/.space/woltspace-usage/` (history, the latest Claude
   limits reading, the install receipt, their locks; all owner-only), plus the
-  manifest's keeper and port in `<APP>/woltspace.json`, the skill folder and, with
-  your human's yes, one `statusLine` entry.
+  manifest's keeper and port in `<APP>/woltspace.json`, the skill folder, and
+  one `statusLine` entry when Claude settings are eligible.
 - The dashboard is private to the lodge (`"public": false`). Usage numbers
   describe your human's spending: never put them anywhere public without asking.

@@ -11,8 +11,9 @@ and a nightly save, counted fresh from the engines' own transcripts.
 https://github.com/asharakeh/woltspace-usage"*. Your wolt follows
 [AGENTS.md](AGENTS.md): it puts the app in your lodge's Apps list, imports any
 usage history your lodge already kept, schedules the nightly save and adds a skill
-so every wolt can answer usage questions. It asks you before it turns on Claude
-plan limits, and shows you the exact settings change first.
+so every wolt can answer usage questions. Claude plan limits are enabled by
+default when the settings are eligible. Your wolt reports the exact change. To
+turn off the built-in Claude feed, ask your wolt to run `app.py limits-setup remove`.
 
 Updating and removing work the same way: ask your wolt.
 
@@ -28,8 +29,9 @@ Updating and removing work the same way: ask your wolt.
   a nightly save at 23:55 lodge time keeps each day's numbers in
   `<wolts_dir>/.space/woltspace-usage/`, which your lodge's backups include.
 - **Plan limits.** Codex limits come from its transcripts. Claude limits need one
-  status-line entry in Claude's settings, made only with your yes and removed
-  again on uninstall unless you changed it. On a container lodge the entry goes
+  status-line entry in Claude's settings. Install adds it when the settings
+  are eligible and preserves any existing status line, including a disabled one.
+  Uninstall removes the app's entry if it is still unchanged. On a container lodge the entry goes
   into the keeper wolt's settings, so the reading updates when the keeper uses
   Claude; the dashboard shows when it was read.
 
