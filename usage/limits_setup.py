@@ -11,10 +11,13 @@ settings file is unreadable, when the file is a link or belongs to someone else,
 or when the helper could not tell lodge sessions from other Claude sessions.
 """
 
+import fcntl
 import json
 import os
 import shlex
 import sys
+import uuid
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -150,43 +153,65 @@ def _without_member(before, settings, status_line):
     return (json.dumps(expected, indent=2) + "\n").encode()
 
 
+@contextmanager
+def _setup_lock(root):
+    """One apply or remove at a time per lodge (a stable sibling lock in the app's state folder)."""
+    folder = lodge.state_dir(root)
+    folder.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with os.fdopen(os.open(folder / "claude-limits-setup.lock", os.O_RDWR | os.O_CREAT, 0o600), "rb") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def _drop_attempt(root, attempt):
+    """Clear the receipt's entry only if it is still this attempt's."""
+    def change(receipt):
+        if (receipt.get("claude_limits") or {}).get("attempt") == attempt:
+            receipt.pop("claude_limits")
+    lodge.update_receipt(root, change)
+
+
 def apply(root, wolt, environ=None, managed=None):
     """Make the proposed change (after the human's yes) and record it. Returns the proposal.
 
-    The receipt records the intent before the settings file is touched, so a failure
-    in between leaves something `remove` knows about.
+    Applies and removes run one at a time. The receipt records the intent, tagged
+    with this attempt, before the settings file is touched; a failure clears only
+    that attempt's entry.
     """
-    if lodge.read_receipt(root).get("claude_limits"):
-        raise NotEligible("the Claude limits change is already recorded; remove it first")
-    planned = proposal(root, wolt, environ, managed)
-    path, status_line = Path(planned["settings_file"]), planned["change"]["statusLine"]
-    before, settings = _read(path)
-    if "statusLine" in settings:
-        raise NotEligible(f"{path} already sets a status line; it stays as it is")
-    text = _with_member(before, settings, status_line)
-    entry = {"settings_file": str(path), "statusLine": status_line, "state": "applying"}
-    lodge.update_receipt(root, lambda receipt: receipt.__setitem__("claude_limits", entry))
-    try:
-        _replace(path, before, text)
-    except BaseException:
-        lodge.update_receipt(root, lambda receipt: receipt.pop("claude_limits", None))
-        raise
-    applied = dict(entry, state="applied", applied_at=datetime.now(UTC).isoformat(timespec="seconds"))
-    lodge.update_receipt(root, lambda receipt: receipt.__setitem__("claude_limits", applied))
-    return planned
+    with _setup_lock(root):
+        if lodge.read_receipt(root).get("claude_limits"):
+            raise NotEligible("the Claude limits change is already recorded; remove it first")
+        planned = proposal(root, wolt, environ, managed)
+        path, status_line = Path(planned["settings_file"]), planned["change"]["statusLine"]
+        before, settings = _read(path)
+        if "statusLine" in settings:
+            raise NotEligible(f"{path} already sets a status line; it stays as it is")
+        text = _with_member(before, settings, status_line)
+        attempt = uuid.uuid4().hex
+        entry = {"settings_file": str(path), "statusLine": status_line, "state": "applying", "attempt": attempt}
+        lodge.update_receipt(root, lambda receipt: receipt.__setitem__("claude_limits", entry))
+        try:
+            _replace(path, before, text)
+        except BaseException:
+            _drop_attempt(root, attempt)
+            raise
+        applied = dict(entry, state="applied", applied_at=datetime.now(UTC).isoformat(timespec="seconds"))
+        lodge.update_receipt(root, lambda receipt: receipt.__setitem__("claude_limits", applied))
+        return planned
 
 
 def remove(root):
     """Take the recorded entry out if it is unchanged. Returns "removed", "kept" or "none"."""
-    recorded = lodge.read_receipt(root).get("claude_limits")
-    if not recorded:
-        return "none"
-    path = Path(recorded["settings_file"])
-    outcome = "kept"
-    if not path.is_symlink():
-        before, settings = _read(path)
-        if before is not None and settings.get("statusLine") == recorded["statusLine"]:
-            _replace(path, before, _without_member(before, settings, recorded["statusLine"]))
-            outcome = "removed"
-    lodge.update_receipt(root, lambda receipt: receipt.pop("claude_limits", None))
-    return outcome
+    with _setup_lock(root):
+        recorded = lodge.read_receipt(root).get("claude_limits")
+        if not recorded:
+            return "none"
+        path = Path(recorded["settings_file"])
+        outcome = "kept"
+        if not path.is_symlink():
+            before, settings = _read(path)
+            if before is not None and settings.get("statusLine") == recorded["statusLine"]:
+                _replace(path, before, _without_member(before, settings, recorded["statusLine"]))
+                outcome = "removed"
+        _drop_attempt(root, recorded.get("attempt"))
+        return outcome

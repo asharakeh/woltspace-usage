@@ -133,7 +133,7 @@ def test_a_verified_session_is_not_looked_up_again(tmp_path, lodge_root):
         claude_statusline.publish(lodge_root, datetime.now(UTC) - timedelta(minutes=minutes), READING, environ=env)
     assert cli_calls(tmp_path) == ["session list --json --wolt alpha"]
     cache = lodge.state_dir(lodge_root) / "claude-sessions.json"
-    assert json.loads(cache.read_text()) == {"alpha-session": CLAUDE_ID}
+    assert json.loads(cache.read_text()) == {"verified": {"alpha-session": CLAUDE_ID}, "refused": {}}
     assert stat.S_IMODE(cache.stat().st_mode) == 0o600
 
 
@@ -328,3 +328,68 @@ def test_a_failed_settings_write_leaves_no_recorded_change(tmp_path, lodge_root,
         limits_setup.apply(lodge_root, "alpha", lodge_env(tmp_path, lodge_root), managed=tmp_path / "managed")
     assert "claude_limits" not in lodge.read_receipt(lodge_root)
     assert not (tmp_path / "home/.claude/settings.json").exists()
+
+
+def test_an_unrecorded_claude_is_refused_without_asking_on_every_update(tmp_path, lodge_root):
+    other = "00000000-0000-0000-0000-00000000dead"
+    clock = [1000.0]
+
+    def ask():
+        return claude_statusline._registered(lodge_root, "alpha-session", "alpha", other, subprocess.run,
+                                             now=lambda: clock[0])
+
+    assert [ask(), ask(), ask()] == [False, False, False]
+    assert len(cli_calls(tmp_path)) == 1
+    clock[0] += claude_statusline.REFUSAL_SECONDS + 1  # a refusal is remembered only briefly
+    assert ask() is False and len(cli_calls(tmp_path)) == 2
+
+
+def test_overlapping_applies_never_orphan_the_change(tmp_path, lodge_root, monkeypatch):
+    """Interleaving: the first apply is held after reading the settings, before recording
+    anything, while a second apply runs."""
+    import threading
+    env, managed = lodge_env(tmp_path, lodge_root), tmp_path / "managed"
+    real_member, entered, release = limits_setup._with_member, threading.Event(), threading.Event()
+    calls = []
+
+    def held_member(before, settings, status_line):
+        calls.append(1)
+        if len(calls) == 1:
+            entered.set()
+            release.wait(10)
+        return real_member(before, settings, status_line)
+
+    monkeypatch.setattr(limits_setup, "_with_member", held_member)
+    outcomes = {}
+
+    def run(label):
+        try:
+            limits_setup.apply(lodge_root, "alpha", env, managed=managed)
+            outcomes[label] = "applied"
+        except limits_setup.NotEligible as error:
+            outcomes[label] = str(error)
+
+    first = threading.Thread(target=run, args=("first",))
+    first.start()
+    assert entered.wait(10)
+    second = threading.Thread(target=run, args=("second",))
+    second.start()
+    second.join(0.5)  # it waits for the first instead of racing it
+    release.set()
+    first.join(10)
+    second.join(10)
+    assert outcomes["first"] == "applied" and "already recorded" in outcomes["second"]
+    settings = tmp_path / "home/.claude/settings.json"
+    assert "statusLine" in json.loads(settings.read_text())
+    assert lodge.read_receipt(lodge_root)["claude_limits"]["state"] == "applied"
+    assert limits_setup.remove(lodge_root) == "removed"
+    assert "statusLine" not in json.loads(settings.read_text())
+
+
+def test_a_failed_attempt_never_clears_another_attempt_s_entry(lodge_root):
+    entry = {"settings_file": "x", "statusLine": {}, "state": "applied", "attempt": "winner"}
+    lodge.update_receipt(lodge_root, lambda receipt: receipt.__setitem__("claude_limits", entry))
+    limits_setup._drop_attempt(lodge_root, "loser")
+    assert lodge.read_receipt(lodge_root)["claude_limits"] == entry
+    limits_setup._drop_attempt(lodge_root, "winner")
+    assert "claude_limits" not in lodge.read_receipt(lodge_root)

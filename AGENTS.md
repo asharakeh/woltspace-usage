@@ -73,6 +73,9 @@ human names another wolt. Run every `app.py` command as written here
      session), tell your human that and why, and leave everything as it is.
    - The helper records readings only from this lodge's registered Claude
      sessions, and keeps only the plan-limit windows and when they were read.
+     A session whose Claude conversation was cleared (`/clear`) or replaced has a
+     new Claude session id the lodge did not record, so it stops feeding readings;
+     the next lodge-started or resumed session feeds them again.
    - On a container lodge each wolt has its own Claude settings, so the change
      goes into `<KEEPER>`'s: only `<KEEPER>`'s Claude sessions feed the reading.
      The limits are the account's, so that is enough while `<KEEPER>` works with

@@ -20,6 +20,7 @@ WINDOWS = {"five_hour": 300, "seven_day": 10080}
 INPUT_LIMIT = 128 * 1024
 LOCK_SECONDS = 0.2
 CACHED_SESSIONS = 50
+REFUSAL_SECONDS = 60
 MAX_CLOCK_SKEW = timedelta(minutes=5)
 
 
@@ -69,20 +70,33 @@ def recording(root, data, environ=None, run=subprocess.run):
     return _registered(root, name, wolt, claude_id.lower(), run)
 
 
-def _registered(root, name, wolt, claude_id, run):
-    """Whether the lodge recorded `claude_id` for its session `name`; verified pairs are cached."""
+def _registered(root, name, wolt, claude_id, run, now=time.time):
+    """Whether the lodge recorded `claude_id` for its session `name`.
+
+    Verified pairs are cached; refused pairs are cached for REFUSAL_SECONDS, so a
+    Claude the lodge did not record does not ask the lodge on every status update.
+    """
     cache_path = lodge.state_dir(root) / "claude-sessions.json"
     try:
         cache = _settings(cache_path)
-    except (OSError, ValueError, RecursionError):
-        cache = {}
-    if cache.get(name) == claude_id:
+        verified, refused = dict(cache.get("verified", {})), dict(cache.get("refused", {}))
+    except (OSError, ValueError, RecursionError, AttributeError, TypeError):
+        verified, refused = {}, {}
+    if verified.get(name) == claude_id:
         return True
-    if lodge.engine_session_of(root, name, wolt, run) != claude_id:
+    pair, moment = f"{name} {claude_id}", now()
+    refused = {key: at for key, at in refused.items()
+               if isinstance(at, (int, float)) and 0 <= moment - at < REFUSAL_SECONDS}
+    if pair in refused:
         return False
-    cache = dict(list(cache.items())[-(CACHED_SESSIONS - 1):], **{name: claude_id})
-    write_json(cache_path, cache, 0o600, sync=True)
-    return True
+    found = lodge.engine_session_of(root, name, wolt, run) == claude_id
+    if found:
+        verified = dict(list(verified.items())[-(CACHED_SESSIONS - 1):], **{name: claude_id})
+        refused.pop(pair, None)
+    else:
+        refused = dict(list(refused.items())[-(CACHED_SESSIONS - 1):], **{pair: moment})
+    write_json(cache_path, {"verified": verified, "refused": refused}, 0o600, sync=True)
+    return found
 
 
 def publish(root, read_at, data, environ=None):
